@@ -179,6 +179,39 @@ export interface Config {
    * Specifies the name of the database in the debugging artifact.
    */
   debugDatabaseName: string;
+
+  augmentationProperties: AugmentationProperties;
+}
+
+/**
+ * Describes how to augment the user config with inputs from the action.
+ *
+ * When running a CodeQL analysis, the user can supply a config file. When
+ * running a CodeQL analysis from a GitHub action, the user can supply a
+ * config file _and_ a set of inputs.
+ *
+ * The inputs from the action are used to augment the user config before
+ * passing the user config to the CodeQL CLI invocation.
+ */
+interface AugmentationProperties {
+  /**
+   * Whether or not the queries input combines with the queries in the config.
+   */
+  queriesInputCombines: boolean;
+
+  /**
+   * The queries input from the `with` block of the action declaration
+   */
+  queriesInput: Array<{ uses: string }>;
+
+  /**
+   * Whether or not the packs input combines with the packs in the config.
+   */
+  packsInputCombines: boolean;
+  /**
+   * The packs input from the `with` block of the action declaration
+   */
+  packsInput: string[];
   /**
    * Whether we injected ML queries into this configuration.
    */
@@ -978,7 +1011,13 @@ export async function getDefaultConfig(
     debugMode,
     debugArtifactName,
     debugDatabaseName,
-    injectedMlQueries,
+    augmentationProperties: {
+      injectedMlQueries,
+      packsInput: [],
+      queriesInput: [],
+      packsInputCombines: true,
+      queriesInputCombines: true,
+    },
   };
 }
 
@@ -987,8 +1026,8 @@ export async function getDefaultConfig(
  */
 async function loadConfig(
   languagesInput: string | undefined,
-  queriesInput: string | undefined,
-  packsInput: string | undefined,
+  rawQueriesInput: string | undefined,
+  rawPacksInput: string | undefined,
   configFile: string,
   dbLocation: string | undefined,
   debugMode: boolean,
@@ -1053,10 +1092,19 @@ async function loadConfig(
   if (!disableDefaultQueries) {
     await addDefaultQueries(codeQL, languages, queries);
   }
-
+  const packsInputCombines = shouldCombine(rawPacksInput);
+  const packsInput = parsePacksFromInput(rawPacksInput, languages);
+  const queriesInputCombines = shouldCombine(rawQueriesInput);
+  const queriesInput =
+    (
+      (queriesInputCombines
+        ? rawQueriesInput?.slice(1).split(",")
+        : rawQueriesInput?.split(",")) || []
+    ).map((query) => ({ uses: query })) || [];
   const packs = parsePacks(
     parsedYAML[PACKS_PROPERTY] ?? {},
     packsInput,
+    packsInputCombines,
     languages,
     configFile
   );
@@ -1066,10 +1114,10 @@ async function loadConfig(
   // unless they're prefixed with "+", in which case they supplement those
   // in the config file.
   let injectedMlQueries = false;
-  if (queriesInput) {
+  if (rawQueriesInput) {
     injectedMlQueries = await addQueriesAndPacksFromWorkflow(
       codeQL,
-      queriesInput,
+      rawQueriesInput,
       languages,
       queries,
       packs,
@@ -1081,7 +1129,7 @@ async function loadConfig(
     );
   }
   if (
-    shouldAddConfigFileQueries(queriesInput) &&
+    shouldAddConfigFileQueries(rawQueriesInput) &&
     QUERIES_PROPERTY in parsedYAML
   ) {
     const queriesArr = parsedYAML[QUERIES_PROPERTY];
@@ -1159,7 +1207,13 @@ async function loadConfig(
     debugMode,
     debugArtifactName,
     debugDatabaseName,
-    injectedMlQueries,
+    augmentationProperties: {
+      injectedMlQueries,
+      packsInputCombines,
+      packsInput: packsInput?.[languages[0]] ?? [],
+      queriesInputCombines,
+      queriesInput,
+    },
   };
 }
 
@@ -1211,10 +1265,10 @@ export function parsePacksFromConfig(
 }
 
 function parsePacksFromInput(
-  packsInput: string | undefined,
+  rawPacksInput: string | undefined,
   languages: Language[]
 ): Packs | undefined {
-  if (!packsInput?.trim()) {
+  if (!rawPacksInput?.trim()) {
     return undefined;
   }
 
@@ -1226,10 +1280,10 @@ function parsePacksFromInput(
     throw new Error("No languages specified. Cannot process the packs input.");
   }
 
-  packsInput = packsInput.trim();
-  if (packsInput.startsWith("+")) {
-    packsInput = packsInput.substring(1).trim();
-    if (!packsInput) {
+  rawPacksInput = rawPacksInput.trim();
+  if (shouldCombine(rawPacksInput)) {
+    rawPacksInput = rawPacksInput.substring(1).trim();
+    if (!rawPacksInput) {
       throw new Error(
         "A '+' was used in the 'packs' input to specify that you wished to add some packs to your CodeQL analysis. However, no packs were specified. Please either remove the '+' or specify some packs."
       );
@@ -1237,7 +1291,7 @@ function parsePacksFromInput(
   }
 
   return {
-    [languages[0]]: packsInput.split(",").reduce((packs, pack) => {
+    [languages[0]]: rawPacksInput.split(",").reduce((packs, pack) => {
       packs.push(validatePackSpecification(pack));
       return packs;
     }, [] as string[]),
@@ -1338,11 +1392,11 @@ export function validatePackSpecification(pack: string, configFile?: string) {
 // exported for testing
 export function parsePacks(
   rawPacksFromConfig: string[] | Record<string, string[]>,
-  rawPacksInput: string | undefined,
+  packsFromInput: Packs | undefined,
+  packsInputOverrides: boolean,
   languages: Language[],
   configFile: string
 ) {
-  const packsFromInput = parsePacksFromInput(rawPacksInput, languages);
   const packsFomConfig = parsePacksFromConfig(
     rawPacksFromConfig,
     languages,
@@ -1352,15 +1406,24 @@ export function parsePacks(
   if (!packsFromInput) {
     return packsFomConfig;
   }
-  if (!shouldCombinePacks(rawPacksInput)) {
+  if (packsInputOverrides) {
     return packsFromInput;
   }
 
   return combinePacks(packsFromInput, packsFomConfig);
 }
 
-function shouldCombinePacks(packsInput?: string): boolean {
-  return !!packsInput?.trim().startsWith("+");
+/**
+ * The convention in this action is that an input value that is prefixed with a '+' will
+ * be combined with the corresponding value in the config file.
+ *
+ * Without a '+', an input value will override the corresponding value in the config file.
+ *
+ * @param inputValue The input value to process.
+ * @returns true if the input value should replace the corresponding value in the config file, false if it should be appended.
+ */
+function shouldCombine(inputValue?: string): boolean {
+  return !!inputValue?.trim().startsWith("+");
 }
 
 function combinePacks(packs1: Packs, packs2: Packs): Packs {
