@@ -2,6 +2,7 @@ import * as fs from "fs";
 import { OutgoingHttpHeaders } from "http";
 import * as path from "path";
 
+import * as core from "@actions/core";
 import * as toolrunner from "@actions/exec/lib/toolrunner";
 import { default as deepEqual } from "fast-deep-equal";
 import * as yaml from "js-yaml";
@@ -809,6 +810,13 @@ async function getCodeQLForCmd(
         ) {
           delete augmentedConfig.packs;
         }
+
+        // TODO This is just debugging. Remove before merging into main.
+        // This will be a code scanning error
+        core.startGroup("Augmented config");
+        core.info(JSON.stringify(config.augmentationProperties, null, 2));
+        core.info(yaml.dump(augmentedConfig));
+        core.endGroup();
 
         fs.writeFileSync(configLocation, yaml.dump(augmentedConfig));
         extraArgs.push(`--codescanning-config=${configLocation}`);
