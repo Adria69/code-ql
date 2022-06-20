@@ -193,7 +193,7 @@ export interface Config {
  * The inputs from the action are used to augment the user config before
  * passing the user config to the CodeQL CLI invocation.
  */
-interface AugmentationProperties {
+export interface AugmentationProperties {
   /**
    * Whether or not the queries input combines with the queries in the config.
    */
@@ -202,7 +202,7 @@ interface AugmentationProperties {
   /**
    * The queries input from the `with` block of the action declaration
    */
-  queriesInput: Array<{ uses: string }>;
+  queriesInput?: Array<{ uses: string }>;
 
   /**
    * Whether or not the packs input combines with the packs in the config.
@@ -211,7 +211,7 @@ interface AugmentationProperties {
   /**
    * The packs input from the `with` block of the action declaration
    */
-  packsInput: string[];
+  packsInput?: string[];
   /**
    * Whether we injected ML queries into this configuration.
    */
@@ -948,8 +948,8 @@ function shouldAddConfigFileQueries(queriesInput: string | undefined): boolean {
  */
 export async function getDefaultConfig(
   languagesInput: string | undefined,
-  queriesInput: string | undefined,
-  packsInput: string | undefined,
+  rawQueriesInput: string | undefined,
+  rawPacksInput: string | undefined,
   dbLocation: string | undefined,
   debugMode: boolean,
   debugArtifactName: string,
@@ -979,21 +979,28 @@ export async function getDefaultConfig(
     };
   }
   await addDefaultQueries(codeQL, languages, queries);
-  const packs = parsePacksFromInput(packsInput, languages) ?? {};
-  let injectedMlQueries = false;
-  if (queriesInput) {
-    injectedMlQueries = await addQueriesAndPacksFromWorkflow(
-      codeQL,
-      queriesInput,
-      languages,
-      queries,
-      packs,
-      tempDir,
-      workspacePath,
-      apiDetails,
-      featureFlags,
-      logger
-    );
+  const augmentationProperties = calculateAugmentation(
+    rawPacksInput,
+    rawQueriesInput,
+    languages
+  );
+  const packs = {
+    [Object.keys(languages)[0]]: augmentationProperties.packsInput ?? [],
+  };
+  if (rawQueriesInput) {
+    augmentationProperties.injectedMlQueries =
+      await addQueriesAndPacksFromWorkflow(
+        codeQL,
+        rawQueriesInput,
+        languages,
+        queries,
+        packs,
+        tempDir,
+        workspacePath,
+        apiDetails,
+        featureFlags,
+        logger
+      );
   }
 
   return {
@@ -1011,13 +1018,7 @@ export async function getDefaultConfig(
     debugMode,
     debugArtifactName,
     debugDatabaseName,
-    augmentationProperties: {
-      injectedMlQueries,
-      packsInput: [],
-      queriesInput: [],
-      packsInputCombines: true,
-      queriesInputCombines: true,
-    },
+    augmentationProperties,
   };
 }
 
@@ -1092,19 +1093,15 @@ async function loadConfig(
   if (!disableDefaultQueries) {
     await addDefaultQueries(codeQL, languages, queries);
   }
-  const packsInputCombines = shouldCombine(rawPacksInput);
-  const packsInput = parsePacksFromInput(rawPacksInput, languages);
-  const queriesInputCombines = shouldCombine(rawQueriesInput);
-  const queriesInput =
-    (
-      (queriesInputCombines
-        ? rawQueriesInput?.slice(1).split(",")
-        : rawQueriesInput?.split(",")) || []
-    ).map((query) => ({ uses: query })) || [];
+  const augmentationProperties = calculateAugmentation(
+    rawPacksInput,
+    rawQueriesInput,
+    languages
+  );
   const packs = parsePacks(
     parsedYAML[PACKS_PROPERTY] ?? {},
-    packsInput,
-    packsInputCombines,
+    augmentationProperties.packsInput,
+    augmentationProperties.packsInputCombines,
     languages,
     configFile
   );
@@ -1113,20 +1110,20 @@ async function loadConfig(
   // they should take precedence over the queries in the config file
   // unless they're prefixed with "+", in which case they supplement those
   // in the config file.
-  let injectedMlQueries = false;
   if (rawQueriesInput) {
-    injectedMlQueries = await addQueriesAndPacksFromWorkflow(
-      codeQL,
-      rawQueriesInput,
-      languages,
-      queries,
-      packs,
-      tempDir,
-      workspacePath,
-      apiDetails,
-      featureFlags,
-      logger
-    );
+    augmentationProperties.injectedMlQueries =
+      await addQueriesAndPacksFromWorkflow(
+        codeQL,
+        rawQueriesInput,
+        languages,
+        queries,
+        packs,
+        tempDir,
+        workspacePath,
+        apiDetails,
+        featureFlags,
+        logger
+      );
   }
   if (
     shouldAddConfigFileQueries(rawQueriesInput) &&
@@ -1207,13 +1204,32 @@ async function loadConfig(
     debugMode,
     debugArtifactName,
     debugDatabaseName,
-    augmentationProperties: {
-      injectedMlQueries,
-      packsInputCombines,
-      packsInput: packsInput?.[languages[0]] ?? [],
-      queriesInputCombines,
-      queriesInput,
-    },
+    augmentationProperties,
+  };
+}
+
+function calculateAugmentation(
+  rawPacksInput: string | undefined,
+  rawQueriesInput: string | undefined,
+  languages: Language[]
+): AugmentationProperties {
+  const packsInputCombines = shouldCombine(rawPacksInput);
+  const packsInput = parsePacksFromInput(rawPacksInput, languages);
+  const queriesInputCombines = shouldCombine(rawQueriesInput);
+  const queriesInput = rawQueriesInput
+    ? (
+        (queriesInputCombines
+          ? rawQueriesInput.slice(1).split(",")
+          : rawQueriesInput.split(",")) || []
+      ).map((query) => ({ uses: query }))
+    : undefined;
+
+  return {
+    injectedMlQueries: false, // filled in later
+    packsInputCombines,
+    packsInput: packsInput?.[languages[0]],
+    queriesInput,
+    queriesInputCombines,
   };
 }
 
@@ -1392,11 +1408,11 @@ export function validatePackSpecification(pack: string, configFile?: string) {
 // exported for testing
 export function parsePacks(
   rawPacksFromConfig: string[] | Record<string, string[]>,
-  packsFromInput: Packs | undefined,
+  packsFromInput: string[] | undefined,
   packsInputOverrides: boolean,
   languages: Language[],
   configFile: string
-) {
+): Packs {
   const packsFomConfig = parsePacksFromConfig(
     rawPacksFromConfig,
     languages,
@@ -1407,10 +1423,10 @@ export function parsePacks(
     return packsFomConfig;
   }
   if (packsInputOverrides) {
-    return packsFromInput;
+    return { [languages[0]]: packsFromInput };
   }
 
-  return combinePacks(packsFromInput, packsFomConfig);
+  return combinePacks(packsFromInput, packsFomConfig, languages[0]);
 }
 
 /**
@@ -1426,16 +1442,13 @@ function shouldCombine(inputValue?: string): boolean {
   return !!inputValue?.trim().startsWith("+");
 }
 
-function combinePacks(packs1: Packs, packs2: Packs): Packs {
-  const packs = {};
-  for (const lang of Object.keys(packs1)) {
-    packs[lang] = packs1[lang].concat(packs2[lang] || []);
-  }
-  for (const lang of Object.keys(packs2)) {
-    if (!packs[lang]) {
-      packs[lang] = packs2[lang];
-    }
-  }
+function combinePacks(
+  packsArr: string[],
+  packsObj: Packs,
+  mainLanguage: Language
+): Packs {
+  const packs = { ...packsObj };
+  packs[mainLanguage] = (packs[mainLanguage] || []).concat(packsArr);
   return packs;
 }
 

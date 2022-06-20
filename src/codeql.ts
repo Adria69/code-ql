@@ -776,33 +776,38 @@ async function getCodeQLForCmd(
           }
         }
         // Inject the queries from the input
-        if (config.augmentationProperties.queriesInputCombines) {
-          augmentedConfig.queries = (augmentedConfig.queries || []).concat(
-            config.augmentationProperties.queriesInput
-          );
-        } else {
-          augmentedConfig.queries = config.augmentationProperties.queriesInput;
+        if (config.augmentationProperties.queriesInput) {
+          if (config.augmentationProperties.queriesInputCombines) {
+            augmentedConfig.queries = (augmentedConfig.queries || []).concat(
+              config.augmentationProperties.queriesInput
+            );
+          } else {
+            augmentedConfig.queries =
+              config.augmentationProperties.queriesInput;
+          }
         }
-        if (augmentedConfig.queries.length === 0) {
+        if (augmentedConfig.queries?.length === 0) {
           delete augmentedConfig.queries;
         }
 
         // Inject the packs from the input
-        if (config.augmentationProperties.packsInputCombines) {
-          // At this point, we already know that this is a single-language analysis
-          if (Array.isArray(augmentedConfig.packs)) {
-            augmentedConfig.packs = (augmentedConfig.packs || []).concat(
-              config.augmentationProperties.packsInput
-            );
-          } else if (!augmentedConfig.packs) {
-            augmentedConfig.packs = config.augmentationProperties.packsInput;
+        if (config.augmentationProperties.packsInput) {
+          if (config.augmentationProperties.packsInputCombines) {
+            // At this point, we already know that this is a single-language analysis
+            if (Array.isArray(augmentedConfig.packs)) {
+              augmentedConfig.packs = (augmentedConfig.packs || []).concat(
+                config.augmentationProperties.packsInput
+              );
+            } else if (!augmentedConfig.packs) {
+              augmentedConfig.packs = config.augmentationProperties.packsInput;
+            } else {
+              const language = Object.keys(augmentedConfig.packs)[0];
+              augmentedConfig.packs[language] =
+                config.augmentationProperties.packsInput;
+            }
           } else {
-            const language = Object.keys(augmentedConfig.packs)[0];
-            augmentedConfig.packs[language] =
-              config.augmentationProperties.packsInput;
+            augmentedConfig.packs = config.augmentationProperties.packsInput;
           }
-        } else {
-          augmentedConfig.packs = config.augmentationProperties.packsInput;
         }
         if (
           Array.isArray(augmentedConfig.packs) &&

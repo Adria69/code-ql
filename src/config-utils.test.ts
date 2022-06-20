@@ -356,7 +356,13 @@ test("load non-empty input", async (t) => {
       debugMode: false,
       debugArtifactName: "my-artifact",
       debugDatabaseName: "my-db",
-      injectedMlQueries: false,
+      augmentationProperties: {
+        injectedMlQueries: false,
+        packsInputCombines: false,
+        queriesInputCombines: false,
+        packsInput: [],
+        queriesInput: [],
+      },
     };
 
     const languages = "javascript";
@@ -1637,7 +1643,13 @@ function parseInputAndConfigMacro(
   expected
 ) {
   t.deepEqual(
-    configUtils.parsePacks(packsFromConfig, packsFromInput, languages, "/a/b"),
+    configUtils.parsePacks(
+      packsFromConfig,
+      packsFromInput?.split(","),
+      false,
+      languages,
+      "/a/b"
+    ),
     expected
   );
 }
@@ -1655,7 +1667,8 @@ function parseInputAndConfigErrorMacro(
     () => {
       configUtils.parsePacks(
         packsFromConfig,
-        packsFromInput,
+        packsFromInput?.split(","),
+        false,
         languages,
         "/a/b"
       );
